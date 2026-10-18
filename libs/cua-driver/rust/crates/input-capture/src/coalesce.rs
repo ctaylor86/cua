@@ -54,6 +54,13 @@ impl Coalescer {
                 self.char_count = self.char_count.saturating_sub(1);
                 self.last_key_ms = t_ms;
             }
+            // ponytail: only known navigation keys may be recorded literally;
+            // an unknown key may be typed content when OS translation fails.
+            (None, false) if !is_navigation_key(&input.key) => {
+                self.run_start_ms.get_or_insert(t_ms);
+                self.char_count += 1;
+                self.last_key_ms = t_ms;
+            }
             _ => {
                 if let Some(event) = self.flush() {
                     events.push(event);
@@ -90,6 +97,29 @@ impl Coalescer {
     }
 }
 
+fn is_navigation_key(key: &str) -> bool {
+    matches!(
+        key,
+        "Backspace"
+            | "Delete"
+            | "Enter"
+            | "Tab"
+            | "Escape"
+            | "ArrowLeft"
+            | "ArrowRight"
+            | "ArrowUp"
+            | "ArrowDown"
+            | "Home"
+            | "End"
+            | "PageUp"
+            | "PageDown"
+            | "Insert"
+    ) || key
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (1..=24).contains(&number))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +138,19 @@ mod tests {
             key: key.into(),
             modifiers: Modifiers::default(),
         }
+    }
+
+    #[test]
+    fn untranslated_plain_keys_never_disclose_characters_or_space() {
+        let mut coalescer = Coalescer::new();
+        for (index, key) in ["a", "Space", "VK_65", "Unknown"].iter().enumerate() {
+            assert!(coalescer.push(named(key), index as u64).is_empty());
+        }
+        assert_eq!(coalescer.flush(), Some(HumanEvent::Text { t_ms: 0 }));
+        assert_eq!(
+            coalescer.push(named("ArrowLeft"), 5)[0].to_record().0,
+            "human_key"
+        );
     }
 
     #[test]

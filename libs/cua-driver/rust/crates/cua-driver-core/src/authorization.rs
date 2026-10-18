@@ -231,6 +231,7 @@ const PRIVATE_OBSERVATION_OPERATIONS: &[&str] = &[
     "get_desktop_state",
     "get_accessibility_tree",
     "get_window_state",
+    "parse_visual_regions",
     "verify_state",
     "list_apps",
     "list_windows",
@@ -310,6 +311,7 @@ const FILE_TRANSFER_OPERATIONS: &[&str] = &[
     "stop_demonstration",
     "replay_trajectory",
     "install_ffmpeg",
+    "install_extension",
 ];
 const FILE_TRANSFER_SCOPE_KEYS: &[&str] = &[
     "daemon_generation",
@@ -353,6 +355,7 @@ const BROWSER_BOUND_INPUT_OPERATIONS: &[&str] = &[
     "browser_navigate",
     "browser_click",
     "browser_type",
+    "browser_select",
     "browser_pointer",
 ];
 const BROWSER_BOUND_INPUT_SCOPE_KEYS: &[&str] = &[
@@ -790,7 +793,8 @@ pub fn enforcement_adapters_for_call(
         || (tool == "clipboard_write"
             && (args.get("image_path").and_then(Value::as_str).is_some()
                 || args.get("file_path").and_then(Value::as_str).is_some()))
-        || (tool == "install_ffmpeg" && args.get("confirm").and_then(Value::as_bool) == Some(true))
+        || (matches!(tool, "install_ffmpeg" | "install_extension")
+            && args.get("confirm").and_then(Value::as_bool) == Some(true))
     {
         add("file_transfer_and_output");
     }
@@ -895,6 +899,8 @@ pub fn advertised_risk_for(tool: &str) -> RiskAssessment {
         | "press_key"
         | "hotkey"
         | "set_value"
+        | "run_steps"
+        | "run_script"
         | "invoke_menu"
         | "launch_app"
         | "bring_to_front"
@@ -926,9 +932,11 @@ pub fn advertised_risk_for(tool: &str) -> RiskAssessment {
         | "browser_navigate"
         | "browser_click"
         | "browser_type"
+        | "browser_select"
         | "browser_pointer"
         | "history_status"
-        | "history_query" => RiskClass::R2,
+        | "history_query"
+        | "parse_visual_regions" => RiskClass::R2,
 
         // External/file side effects or generic compound action surfaces.
         "get_desktop_state"
@@ -939,6 +947,7 @@ pub fn advertised_risk_for(tool: &str) -> RiskAssessment {
         | "stop_demonstration"
         | "replay_trajectory"
         | "install_ffmpeg"
+        | "install_extension"
         | "page"
         | "browser_dialog"
         | "browser_set_input_files"
@@ -1076,7 +1085,7 @@ pub fn classify_tool_call(tool: &str, args: &Value) -> RiskAssessment {
             enforcement: RiskEnforcement::Active,
             operation_sensitive: true,
         },
-        "install_ffmpeg" => {
+        "install_ffmpeg" | "install_extension" => {
             let confirmed = args.get("confirm").and_then(Value::as_bool) == Some(true);
             RiskAssessment {
                 class: if confirmed {
@@ -1120,7 +1129,7 @@ pub fn authorize_tool_call(
     args: &Value,
 ) -> Result<RiskAssessment, crate::policy::AuthorizationError> {
     let context = crate::session_authorization::configured_registry()
-        .and_then(crate::session_authorization::SessionAuthorizationRegistry::legacy_context)
+        .and_then(|registry| registry.legacy_context())
         .map_err(crate::policy::AuthorizationError::Loading)?;
     authorize_tool_call_with_context(tool, args, context.as_ref())
 }
@@ -1133,6 +1142,7 @@ pub fn authorize_tool_call_with_context(
     args: &Value,
     context: &crate::session_authorization::EffectiveAuthorizationContext,
 ) -> Result<RiskAssessment, crate::policy::AuthorizationError> {
+    let tool = crate::tool::renamed_tool(tool).unwrap_or(tool);
     enforce_hard_invariants(tool, args)?;
     if context.is_expired() {
         return Err(crate::policy::AuthorizationError::Denied(
@@ -1960,6 +1970,17 @@ mod tests {
             vec!["file_transfer_and_output"]
         );
         assert_eq!(
+            ids("install_extension", serde_json::json!({})),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            ids(
+                "install_extension",
+                serde_json::json!({"name": "perception", "confirm": true})
+            ),
+            vec!["file_transfer_and_output"]
+        );
+        assert_eq!(
             ids("get_browser_state", serde_json::json!({})),
             vec!["private_observation"]
         );
@@ -1969,6 +1990,10 @@ mod tests {
         );
         assert_eq!(
             ids("browser_click", serde_json::json!({})),
+            vec!["browser_bound_input"]
+        );
+        assert_eq!(
+            ids("browser_select", serde_json::json!({})),
             vec!["browser_bound_input"]
         );
         assert_eq!(

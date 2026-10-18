@@ -20,7 +20,9 @@ pub struct Modifiers {
 
 impl Modifiers {
     pub(crate) fn is_command(self) -> bool {
-        self.ctrl || self.alt || self.meta
+        // Option/Alt and AltGr (Ctrl+Alt) can type characters. Fail closed
+        // rather than exposing a physical key when translation is unavailable.
+        self.meta || (self.ctrl && !self.alt)
     }
 }
 
@@ -112,6 +114,45 @@ mod tests {
     fn command_modifiers_exclude_shift_only() {
         assert!(!Modifiers {
             shift: true,
+            ..Default::default()
+        }
+        .is_command());
+        assert!(Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
+        .is_command());
+    }
+
+    #[test]
+    fn option_and_altgr_typing_are_not_command_keys() {
+        for modifiers in [
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!modifiers.is_command());
+            let mut coalescer = crate::coalesce::Coalescer::new();
+            assert!(coalescer
+                .push(
+                    crate::coalesce::KeyInput {
+                        text_char: None,
+                        key: "e".into(),
+                        modifiers,
+                    },
+                    0
+                )
+                .is_empty());
+            assert_eq!(coalescer.flush(), Some(HumanEvent::Text { t_ms: 0 }));
+        }
+        assert!(Modifiers {
+            meta: true,
             ..Default::default()
         }
         .is_command());
